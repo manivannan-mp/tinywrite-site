@@ -1,0 +1,55 @@
+name: Deploy (GitHub Pages)
+
+# This repo holds NO source. It exists because GitHub Pages needs a paid plan to publish from a
+# private repo, and TinyWrite's source is private — but the app is client-only, so the built
+# bundle is public the moment the site is live. The private repo builds the site and uploads it
+# here as the `site-latest` release asset, then dispatches `deploy-site`; this workflow deploys
+# that asset.
+#
+# The Actions artifact route is what makes it work at all: the on-device model is one ~497 MB
+# file, so the site can never be committed to git (100 MB per-file limit) — but it can be
+# uploaded as an artifact, which has no per-file limit. The published site must stay under the
+# ~1 GB Pages cap; the current build is ~587 MB.
+on:
+  repository_dispatch:
+    types: [deploy-site]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download the site build published by the private repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          gh release download site-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'site.tar.gz' \
+            --output /tmp/site.tar.gz
+          tar -xzf /tmp/site.tar.gz -C site
+          echo "source commit: ${{ github.event.client_payload.sha || 'manual run' }}"
+          echo "unpacked site: $(du -sh site | cut -f1)"
+          # Fail loudly rather than publishing an empty site if the asset was ever malformed.
+          test -f site/index.html || { echo "no index.html in the tarball"; exit 1; }
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
